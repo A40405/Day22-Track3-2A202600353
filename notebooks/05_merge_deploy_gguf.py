@@ -50,7 +50,7 @@ import torch
 assert torch.cuda.is_available()
 
 # %% [markdown]
-# ## 1. Load DPO model + merge adapter
+# ## 1. Load aligned adapter + merge
 
 # %%
 from unsloth import FastLanguageModel
@@ -62,18 +62,25 @@ model, tokenizer = FastLanguageModel.from_pretrained(
     dtype=None,
     load_in_4bit=True,
 )
+from unsloth import get_chat_template
+tokenizer = get_chat_template(
+    tokenizer,
+    chat_template = "chatml",
+)
 if tokenizer.pad_token is None:
     tokenizer.pad_token = tokenizer.eos_token
 
-# Stack SFT-mini → DPO adapters
-SFT_PATH = REPO_ROOT / "adapters" / "sft-mini"
-model = PeftModel.from_pretrained(model, str(SFT_PATH))
-print(f"Loaded SFT-mini adapter from {SFT_PATH}")
+# NB3 saves the final aligned adapter to DPO_PATH, and NB4/NB6 load it directly
+# for inference and eval. Merge from that same artifact so GGUF matches the model
+# you actually compared and benchmarked.
+model = PeftModel.from_pretrained(model, str(DPO_PATH))
+print(f"Loaded aligned DPO adapter from {DPO_PATH}")
 
 # %% [markdown]
-# > **Note:** The DPO adapter trained in NB3 stacks on top of SFT. To get a fully
-# > aligned merged model, we apply both adapters before merging. Unsloth's
-# > `save_pretrained_merged` handles the SFT + DPO + base merge in one shot.
+# > **Note:** NB3 writes the final aligned adapter to `adapters/dpo/`, and later
+# > notebooks load that artifact directly for generation and benchmarking. This
+# > merge step should therefore use `DPO_PATH` too, so the exported GGUF matches
+# > the model you evaluated in NB4 and NB6.
 
 # %% [markdown]
 # ## 2. Save merged FP16 weights
@@ -83,8 +90,8 @@ print(f"Loaded SFT-mini adapter from {SFT_PATH}")
 # converter in step 3.
 
 # %%
-# This re-loads the model with both SFT and DPO adapters merged into base weights.
-# Output is FP16 (or BF16 on Ampere+) HF-format weights ready for inference.
+# Merge the aligned DPO adapter into the base weights. Output is FP16 (or BF16 on
+# Ampere+) HF-format weights ready for inference and GGUF export.
 model.save_pretrained_merged(
     str(MERGED_PATH),
     tokenizer,

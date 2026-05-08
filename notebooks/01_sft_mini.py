@@ -41,7 +41,7 @@ else:  # BIGGPU
     PER_DEVICE_BATCH = 2
     GRAD_ACCUM = 4
 
-SFT_DATASET = os.environ.get("SFT_DATASET", "5CD-AI/Vietnamese-alpaca-cleaned")
+SFT_DATASET = os.environ.get("SFT_DATASET", "bkai-foundation-models/vi-alpaca")
 SFT_SLICE = 1000
 NUM_EPOCHS = 1
 
@@ -80,6 +80,12 @@ model, tokenizer = FastLanguageModel.from_pretrained(
     load_in_4bit=True,
 )
 
+from unsloth import get_chat_template
+tokenizer = get_chat_template(
+    tokenizer,
+    chat_template = "chatml",
+)
+
 # Critical for batch training — Qwen tokenizers ship without pad token.
 if tokenizer.pad_token is None:
     tokenizer.pad_token = tokenizer.eos_token
@@ -106,8 +112,9 @@ print(f"Trainable params: {sum(p.numel() for p in model.parameters() if p.requir
 # %% [markdown]
 # ## 2. Load + format VN Alpaca slice
 #
-# `5CD-AI/Vietnamese-alpaca-cleaned` is a 50k-row VN Alpaca translation. Lab 21
-# uses 1k slice for the demo run; we match that exactly so reward gap is comparable.
+# `bkai-foundation-models/vi-alpaca` is a 50k-row Vietnamese instruction dataset
+# with the standard Alpaca-style `instruction / input / output` schema. Lab 21
+# uses a 1k slice for the demo run; we match that exactly so reward gap is comparable.
 
 # %%
 from datasets import load_dataset
@@ -117,16 +124,34 @@ print(f"Loaded {len(ds)} rows. Columns: {ds.column_names}")
 print(f"\nFirst row:\n{ds[0]}")
 
 # %%
-# Alpaca → ChatML format (Qwen2.5's native template)
+# Alpaca-style rows or conversation rows → ChatML format (Qwen2.5's native template)
 def format_alpaca_to_chat(row):
     messages = []
-    if row.get("instruction"):
+
+    if row.get("instruction") is not None:
         prompt = row["instruction"]
         if row.get("input"):
             prompt += "\n\n" + row["input"]
         messages.append({"role": "user", "content": prompt})
-    if row.get("output"):
-        messages.append({"role": "assistant", "content": row["output"]})
+        if row.get("output"):
+            messages.append({"role": "assistant", "content": row["output"]})
+    elif row.get("conversations"):
+        role_map = {
+            "human": "user",
+            "user": "user",
+            "gpt": "assistant",
+            "assistant": "assistant",
+        }
+        for turn in row["conversations"]:
+            role = role_map.get(turn.get("from") or turn.get("role"))
+            content = turn.get("value") or turn.get("content")
+            if role and content:
+                messages.append({"role": role, "content": content})
+    else:
+        raise ValueError(
+            f"Unsupported SFT row schema. Expected Alpaca fields or conversations, got: {list(row.keys())}"
+        )
+
     text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)
     return {"text": text}
 
@@ -156,7 +181,7 @@ sft_config = SFTConfig(
     seed=42,
     max_seq_length=MAX_LEN,
     dataset_text_field="text",
-    report_to="none",
+    report_to="wandb",
 )
 
 trainer = SFTTrainer(
